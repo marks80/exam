@@ -1,10 +1,13 @@
+# ============================
+#  AWS PROVIDER CONFIGURATION
+# ============================
 provider "aws" {
   region = "eu-north-1"
 }
 
-# ========================
-#  CREATE VPC WITH PUBLIC SUBNETS
-# ========================
+# ============================
+#  NETWORK SETUP - VPC & SUBNETS
+# ============================
 resource "aws_vpc" "eks_vpc" {
   cidr_block = "10.0.0.0/16"
 }
@@ -23,9 +26,9 @@ resource "aws_subnet" "public_subnet_2" {
   map_public_ip_on_launch = true
 }
 
-# ========================
-#  CREATE EKS CLUSTER
-# ========================
+# ============================
+#  EKS CLUSTER SETUP
+# ============================
 resource "aws_eks_cluster" "eks" {
   name     = "eks-cluster"
   role_arn = aws_iam_role.eks_role.arn
@@ -52,9 +55,9 @@ resource "aws_iam_role_policy_attachment" "eks_policy" {
   role       = aws_iam_role.eks_role.name
 }
 
-# ========================
-#  CREATE WORKER NODES
-# ========================
+# ============================
+#  WORKER NODE GROUP
+# ============================
 resource "aws_eks_node_group" "eks_nodes" {
   cluster_name    = aws_eks_cluster.eks.name
   node_group_name = "eks-node-group"
@@ -80,21 +83,74 @@ resource "aws_iam_role" "worker_role" {
   })
 }
 
+# Attach all required policies for worker nodes
 resource "aws_iam_role_policy_attachment" "worker_node_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
   role       = aws_iam_role.worker_role.name
 }
 
-# ========================
-#  AUTHENTICATE EKS FOR HELM
-# ========================
+resource "aws_iam_role_policy_attachment" "worker_cni_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+  role       = aws_iam_role.worker_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "worker_ec2_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  role       = aws_iam_role.worker_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "worker_ssm_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  role       = aws_iam_role.worker_role.name
+}
+
+# ============================
+#  KUBERNETES ACCESS CONTROL (RBAC)
+# ============================
+resource "aws_iam_role" "eks_admin" {
+  name = "eks-admin"
+
+  assume_role_policy = jsonencode({
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "eks.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_admin_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.eks_admin.name
+}
+
+resource "aws_iam_role" "eks_readonly" {
+  name = "eks-read-only"
+
+  assume_role_policy = jsonencode({
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "eks.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_readonly_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AWSOrganizationsReadOnlyAccess"
+  role       = aws_iam_role.eks_readonly.name
+}
+
+# ============================
+#  KUBERNETES AUTHENTICATION SETUP
+# ============================
 data "aws_eks_cluster_auth" "cluster" {
   name = aws_eks_cluster.eks.name
 }
 
-# ========================
-#  DEPLOY ATLANTIS USING HELM
-# ========================
+# ============================
+#  ATLANTIS DEPLOYMENT VIA HELM
+# ============================
 provider "helm" {
   kubernetes {
     host                   = aws_eks_cluster.eks.endpoint
@@ -108,8 +164,20 @@ resource "helm_release" "atlantis" {
   repository = "https://runatlantis.github.io/helm-charts"
   chart      = "atlantis"
 
+  # Use correct allowlist syntax for GitHub repository
   set {
-    name  = "repoWhitelist"
-    value = "github.com/YOUR_GITHUB_REPO"
+    name  = "org.allowlist"
+    value = "github.com/marks80/exam"
+  }
+
+  # Securely provide GitHub authentication via environment variables
+  set {
+    name  = "github.user"
+    value = "$GITHUB_USER"
+  }
+
+  set {
+    name  = "github.token"
+    value = "$GITHUB_TOKEN"
   }
 }
